@@ -1,0 +1,8 @@
+COMPOSE_PROJECT_NAME=example
+DOMAIN="example.local"
+MYSQL_ROOT_PASSWORD=root
+MYSQL_DATABASE=default
+MYSQL_USER=user
+MYSQL_PASSWORD=user
+MYSQL_HOST="example.local"
+MEMCACHED_HOST="example.local"

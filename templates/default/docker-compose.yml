@@ -1,0 +1,44 @@
+services:
+  backend:
+    labels:
+      - dev.orbstack.domains=${DOMAIN:-${COMPOSE_PROJECT_NAME}}
+    build:
+      context: ${DOCKER_DIR}
+    ports:
+      - ${SSH_PORT:-2222}:22
+    volumes:
+      - ${ROOT_DIR}:/var/www
+    env_file:
+      - ${ENV_FILE}
+    networks:
+      - appnet
+
+  db:
+    image: mysql:8.3
+    labels:
+      - dev.orbstack.domains=${MYSQL_HOST:-db.${DOMAIN:-${COMPOSE_PROJECT_NAME}}}
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-default}
+      MYSQL_USER: ${MYSQL_USER:-user}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-user}
+    volumes:
+      - db_data:/var/lib/mysql
+    networks:
+      - appnet
+
+  memcached:
+    image: memcached:latest
+    labels:
+      - dev.orbstack.domains=${MEMCACHED_HOST:-memcached.${DOMAIN:-${COMPOSE_PROJECT_NAME}}}
+    env_file:
+      - ${ENV_FILE}
+    command: ["-m", "1024"]
+    networks:
+      - appnet
+
+networks:
+  appnet:
+
+volumes:
+  db_data:

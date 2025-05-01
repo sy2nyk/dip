@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+
+# Description: Runs drush commands in the backend container
+
+set -e
+
+source "${ROOT_DIR}/.docker/commands/utils/color.sh"
+
+msg "${YELLOW}[INFO] Running drush $*${NOFORMAT}"
+dip exec backend "/var/www/vendor/bin/drush $*"
+DRUSH_EXIT_CODE=$?
+
+if [ $DRUSH_EXIT_CODE -ne 0 ]; then
+    msg "${RED}[ERROR] Drush command failed with exit code: $DRUSH_EXIT_CODE${NOFORMAT}"
+    exit $DRUSH_EXIT_CODE
+fi
+
+exit 0

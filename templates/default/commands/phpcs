@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+
+# Description: Run phpcs
+
+set -e
+
+source "${ROOT_DIR}/.docker/commands/utils/color.sh"
+
+msg "${YELLOW}[INFO] Running PHPCS...${NOFORMAT}"
+dip exec backend "/var/www/vendor/bin/phpcs --colors -s -p --parallel=8"
+PHPCS_EXIT_CODE=$?
+
+if [ $PHPCS_EXIT_CODE -ne 0 ]; then
+    msg "${RED}[ERROR] PHPCS failed with exit code: $PHPCS_EXIT_CODE${NOFORMAT}"
+    exit $PHPCS_EXIT_CODE
+fi
+
+msg "${GREEN}[SUCCESS] PHPCS completed successfully${NOFORMAT}"
+exit 0

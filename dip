@@ -1,0 +1,979 @@
+#!/bin/bash
+
+# DIP - Docker Integration Platform
+# Usage: dip [command] [arguments]
+
+# Configuration
+DIP_VERSION="1.0.0"
+ROOT_DIR="$(pwd)"
+HOME_DIR="${HOME}"
+DIP_HOME="${HOME_DIR}/.dip"
+TEMPLATES_DIR="${DIP_HOME}/templates"
+DIP_INSTALL_PATH="${HOME}/.local/bin/dip"
+
+# Default GitHub templates repository
+DEFAULT_TEMPLATES_REPO="https://github.com/sy2nyk/dip.git"
+DEFAULT_TEMPLATES_BRANCH="main"
+
+# Color definitions
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+BLUE='\033[0;34m'
+MAGENTA='\033[0;35m'
+CYAN='\033[0;36m'
+GRAY='\033[0;37m'
+BOLD='\033[1m'
+NC='\033[0m' # No Color
+
+# Helper function to print colored text
+print_color() {
+  local color="$1"
+  local text="$2"
+  printf "%b%s%b\n" "$color" "$text" "$NC"
+}
+
+# Helper function to print error messages
+print_error() {
+  print_color "$RED" "Error: $1"
+}
+
+# Helper function to print success messages
+print_success() {
+  print_color "$GREEN" "$1"
+}
+
+# Function to find the Docker directory
+find_docker_dir() {
+  # Start from the current directory and look for .docker directory
+  local current_dir="$ROOT_DIR"
+  local max_depth=5  # Maximum depth to search up
+  local depth=0
+  
+  while [ "$depth" -lt "$max_depth" ]; do
+    if [ -d "$current_dir/.docker" ]; then
+      echo "$current_dir/.docker"
+      return 0
+    fi
+    
+    # Move up one directory
+    if [ "$current_dir" = "/" ]; then
+      break
+    fi
+    current_dir="$(dirname "$current_dir")"
+    depth=$((depth + 1))
+  done
+  
+  # If we reach here, we didn't find the .docker directory
+  echo ""
+  return 1
+}
+
+# Set Docker directory and related paths
+DOCKER_DIR=$(find_docker_dir)
+if [ -z "$DOCKER_DIR" ]; then
+  DOCKER_DIR="${ROOT_DIR}/.docker"
+  # For commands that require Docker, we'll check again if the directory exists
+else
+  # Update ROOT_DIR to the parent of the found DOCKER_DIR
+  ROOT_DIR="$(dirname "$DOCKER_DIR")"
+fi
+
+COMMANDS_DIR="${DOCKER_DIR}/commands"
+
+# Function to display usage information
+show_help() {
+  echo -e "${BOLD}DIP - Docker Integration Platform${NC}"
+  echo ""
+  echo -e "Usage: ${CYAN}dip [command] [arguments]${NC}"
+  echo ""
+  echo -e "${BOLD}Built-in commands:${NC}"
+  echo -e "  ${CYAN}bash${NC} [service]             Enter bash shell in a container"
+  echo -e "  ${CYAN}exec${NC} [service] [command]   Execute a command in a container"
+  echo -e "  ${CYAN}db dump${NC} [output_path]      Export database dump"
+  echo -e "  ${CYAN}db import${NC} [input_path]     Import database dump"
+  echo -e "  ${CYAN}start${NC}                      Start all containers"
+  echo -e "  ${CYAN}stop${NC}                       Stop all containers"
+  echo -e "  ${CYAN}restart${NC}                    Restart all containers"
+  echo -e "  ${CYAN}status${NC}                     Show container status"
+  echo -e "  ${CYAN}logs${NC} [service]             View container logs"
+  echo -e "  ${CYAN}build${NC} [service]            Rebuild service containers"
+  echo -e "  ${CYAN}pull${NC}                       Pull latest images"
+  echo -e "  ${CYAN}reset${NC}                      Reset containers (stop, remove, start)"
+  echo -e "  ${CYAN}system${NC}                     Show system information"
+  echo -e "  ${CYAN}cleanup${NC}                    Remove unused containers/images"
+  echo -e "  ${CYAN}prune${NC}                      Remove all unused Docker resources"
+  echo -e "  ${CYAN}stats${NC} [service]            Show container resource usage"
+  echo -e "  ${CYAN}top${NC} [service]              Show running processes"
+  echo -e "  ${CYAN}health${NC}                     Check services health"
+  echo -e "  ${CYAN}update${NC}                     Update DIP to the latest version"
+  echo -e "  ${CYAN}help${NC}                       Show this help message"
+  echo -e "  ${CYAN}--version${NC}                  Show DIP version"
+  echo ""
+
+  # Show custom commands if they exist
+  if [ -d "$COMMANDS_DIR" ] && [ "$(ls -A "$COMMANDS_DIR" 2>/dev/null)" ]; then
+    echo -e "${BOLD}Custom commands:${NC}"
+    for cmd_file in "$COMMANDS_DIR"/*; do
+      if [ -f "$cmd_file" ] && [ -x "$cmd_file" ]; then
+        cmd_name=$(basename "$cmd_file")
+        cmd_desc=$(grep -m 1 "^# Description:" "$cmd_file" | sed 's/# Description: //')
+        if [ -z "$cmd_desc" ]; then
+          cmd_desc="(No description available)"
+        fi
+        printf "  %b%-25s%b %s\n" "$CYAN" "$cmd_name" "$NC" "$cmd_desc"
+      fi
+    done
+    echo ""
+  fi
+
+  echo -e "${BOLD}Examples:${NC}"
+  echo -e "  ${CYAN}dip bash backend${NC}         Open shell in backend container"
+  echo -e "  ${CYAN}dip exec backend ls -la${NC}  Run 'ls -la' in backend container"
+  echo -e "  ${CYAN}dip db dump ~/dump.sql${NC}   Export database to ~/dump.sql"
+  echo -e "  ${CYAN}dip logs nginx${NC}           View logs from the nginx container"
+  echo -e "  ${CYAN}dip build frontend${NC}       Rebuild the frontend container"
+  echo -e "  ${CYAN}dip system${NC}               Show Docker system information"
+  echo -e "  ${CYAN}dip stats${NC}                Monitor resource usage of all containers"
+  echo -e "  ${CYAN}dip health${NC}               Check health status of all services"
+}
+
+# Function to display version information
+show_version() {
+  echo -e "${BOLD}DIP version ${GREEN}$DIP_VERSION${NC}"
+}
+
+# Function to show system information
+show_system_info() {
+  echo -e "${BOLD}Docker System Information:${NC}"
+  echo "------------------------"
+  
+  # Check if Docker is running
+  if ! docker info &>/dev/null; then
+    echo -e "${RED}Error: Docker is not running or not installed.${NC}"
+    exit 1
+  fi
+  
+  # Docker version
+  echo -e "${CYAN}Docker Version:${NC}"
+  docker version --format 'Client: {{.Client.Version}}, Server: {{.Server.Version}}'
+  echo ""
+  
+  # Docker info
+  echo -e "${CYAN}Docker Info Summary:${NC}"
+  echo "Containers: $(docker info --format '{{.Containers}}') (Running: $(docker info --format '{{.ContainersRunning}}'), Paused: $(docker info --format '{{.ContainersPaused}}'), Stopped: $(docker info --format '{{.ContainersStopped}}'))"
+  echo "Images: $(docker info --format '{{.Images}}')"
+  
+  # Get disk usage
+  echo ""
+  echo -e "${CYAN}Disk Usage Summary:${NC}"
+  docker system df | grep -v 'TYPE'
+  
+  # Project-specific information if in a Docker project
+  if [ -d "$DOCKER_DIR" ] && [ -f "${DOCKER_DIR}/docker-compose.yml" ]; then
+    echo ""
+    echo -e "${CYAN}Project Information:${NC}"
+    
+    # Try to get environment file and project name
+    if [ -f "${DOCKER_DIR}/env" ]; then
+      ENV_FILE="${DOCKER_DIR}/env"
+    elif [ -f "${ROOT_DIR}/.env" ]; then
+      ENV_FILE="${ROOT_DIR}/.env"
+    fi
+    
+    if [ -n "$ENV_FILE" ]; then
+      PROJECT_NAME=$(grep COMPOSE_PROJECT_NAME "$ENV_FILE" 2>/dev/null | cut -d= -f2)
+      if [ -n "$PROJECT_NAME" ]; then
+        echo "Project Name: $PROJECT_NAME"
+        
+        # Count project containers
+        local project_containers
+        project_containers=$(docker ps -a --filter name="$PROJECT_NAME" | grep -c "$PROJECT_NAME")
+        echo "Project Containers: $project_containers"
+      fi
+    fi
+    
+    # Show services from docker-compose
+    echo "Services defined in docker-compose.yml:"
+    
+    # Create a temporary environment variable file for docker-compose if needed
+    if [ -f "${DOCKER_DIR}/env" ]; then
+      ENV_FILE="${DOCKER_DIR}/env"
+    elif [ -f "${ROOT_DIR}/.env" ]; then
+      ENV_FILE="${ROOT_DIR}/.env"
+    fi
+    
+    # First try docker-compose config which is the most accurate way
+    if command -v docker-compose &> /dev/null && [ -n "$ENV_FILE" ]; then
+      TEMP_ENV=$(mktemp)
+      cat "$ENV_FILE" > "$TEMP_ENV"
+      {
+        echo "ENV_FILE=$ENV_FILE"
+        echo "DOCKER_DIR=$DOCKER_DIR"
+        echo "ROOT_DIR=$ROOT_DIR"
+      } >> "$TEMP_ENV"
+      
+      services=$(docker-compose --env-file "$TEMP_ENV" -f "${DOCKER_DIR}/docker-compose.yml" config --services 2>/dev/null)
+      rm "$TEMP_ENV"
+      
+      if [ -n "$services" ]; then
+        echo "$services" | sort | while read -r service; do
+          echo -e "  - ${CYAN}$service${NC}"
+        done
+        return
+      fi
+    fi
+    
+    # Fallback to yq if available (better YAML parsing)
+    if command -v yq &> /dev/null; then
+      services=$(yq -r '.services | keys[]' "${DOCKER_DIR}/docker-compose.yml" 2>/dev/null)
+      if [ -n "$services" ]; then
+        echo "$services" | sort | while read -r service; do
+          echo -e "  - ${CYAN}$service${NC}"
+        done
+        return
+      fi
+    fi
+    
+    # Last resort: use grep to extract services section
+    grep -A 100 "^services:" "${DOCKER_DIR}/docker-compose.yml" | 
+      grep -B 100 -m 1 "^[a-zA-Z0-9_-]\+:" | 
+      grep -E "^  [a-zA-Z0-9_-]+:" | 
+      sed -E 's/^  ([a-zA-Z0-9_-]+):.*/\1/' | 
+      sort |
+      while read -r service; do
+        echo -e "  - ${CYAN}$service${NC}"
+      done
+  fi
+}
+
+# Function to monitor container resource usage
+show_container_stats() {
+  # Check if Docker is running
+  if ! docker info &>/dev/null; then
+    print_error "Docker is not running or not installed."
+    exit 1
+  fi
+  
+  local service_name="$1"
+  
+  # If we're in a project context, filter by project containers
+  local filter_args=""
+  
+  if [ -n "$service_name" ]; then
+    # Try to get the container for a specific service
+    ensure_docker_dir
+    check_env_file
+    
+    # Try different naming patterns Docker Compose might use
+    local patterns=(
+      "${PROJECT_NAME}-${service_name}-"  # newer Docker Compose format
+      "${PROJECT_NAME}_${service_name}_"  # older Docker Compose format
+      "${service_name}"                   # fallback to just the service name
+    )
+
+    local container_ids=""
+    
+    for pattern in "${patterns[@]}"; do
+      local ids
+      ids=$(docker ps -q --filter "name=${pattern}")
+      if [ -n "$ids" ]; then
+        container_ids="$ids"
+        break
+      fi
+    done
+    
+    if [ -z "$container_ids" ]; then
+      print_error "No running containers found for service '$service_name'"
+      exit 1
+    fi
+    
+    echo "Showing stats for service: $service_name"
+    # Run docker stats with the specific container IDs
+    docker stats $container_ids
+  elif [ -d "$DOCKER_DIR" ] && [ -f "${DOCKER_DIR}/docker-compose.yml" ]; then
+    # We're in a project context - try to filter by project name
+    if [ -f "${DOCKER_DIR}/env" ]; then
+      ENV_FILE="${DOCKER_DIR}/env"
+    elif [ -f "${ROOT_DIR}/.env" ]; then
+      ENV_FILE="${ROOT_DIR}/.env"
+    fi
+    
+    if [ -n "$ENV_FILE" ]; then
+      PROJECT_NAME=$(grep COMPOSE_PROJECT_NAME "$ENV_FILE" 2>/dev/null | cut -d= -f2)
+      if [ -n "$PROJECT_NAME" ]; then
+        filter_args="--filter name=$PROJECT_NAME"
+        echo "Showing stats for project: $PROJECT_NAME"
+      fi
+    fi
+    
+    # Run docker stats with the project filter
+    if [ -n "$filter_args" ]; then
+      docker stats $filter_args
+    else
+      echo "Showing stats for all containers:"
+      docker stats
+    fi
+  else
+    # Not in a project context - just show all stats
+    echo "Showing stats for all containers:"
+    docker stats
+  fi
+}
+
+# Function to show running processes in containers
+show_container_processes() {
+  # Check if Docker is running
+  if ! docker info &>/dev/null; then
+    print_error "Docker is not running or not installed."
+    exit 1
+  fi
+  
+  local service_name="$1"
+  
+  if [ -n "$service_name" ]; then
+    # Show processes for a specific service
+    container_id=$(get_container_id "$service_name")
+    echo "Running processes in $service_name container (ID: $container_id):"
+    docker top "$container_id"
+  elif [ -d "$DOCKER_DIR" ] && [ -f "${DOCKER_DIR}/docker-compose.yml" ]; then
+    # We're in a project context - show processes for all project containers
+    check_env_file
+    
+    echo "Running processes for $PROJECT_NAME containers:"
+    echo "-----------------------------------------------"
+    
+    # Get all running containers for this project
+    local containers
+    containers=$(docker ps -q --filter "name=$PROJECT_NAME")
+
+    if [ -z "$containers" ]; then
+      echo "No running containers found for project $PROJECT_NAME"
+      exit 0
+    fi
+    
+    # For each container, show its processes
+    for container in $containers; do
+      local container_name
+      container_name=$(docker ps --format "{{.Names}}" -f "id=$container")
+      echo "Container: $container_name (ID: $container)"
+      docker top "$container"
+      echo "-----------------------------------------------"
+    done
+  else
+    # Not in a project context - show a message
+    echo "Error: Not in a DIP project directory."
+    echo "To show processes for all containers, use 'docker ps' and 'docker top <container_id>'"
+    exit 1
+  fi
+}
+
+# Function to check health status of services
+check_services_health() {
+  # Ensure we're in a project context
+  ensure_docker_dir
+  check_env_file
+  
+  echo -e "${BOLD}Checking health status for $PROJECT_NAME services:${NC}"
+  echo "------------------------------------------------"
+  
+  # Get all running containers for this project
+  local containers
+  containers=$(docker ps -q --filter "name=$PROJECT_NAME")
+  
+  if [ -z "$containers" ]; then
+    echo "No running containers found for project $PROJECT_NAME"
+    exit 0
+  fi
+  
+  # Track overall health status
+  local all_healthy=true
+  
+  # For each container, check its health status
+  for container in $containers; do
+    local container_name
+    container_name=$(docker ps --format "{{.Names}}" -f "id=$container")
+    local health_status
+    health_status=$(docker inspect --format "{{if .State.Health}}{{.State.Health.Status}}{{else}}No health check{{end}}" "$container")
+    local status_color=""
+    local service_name
+    service_name=$(echo "$container_name" | sed -E "s/${PROJECT_NAME}[-_]([^-_]+)[-_].*/\1/")
+    
+    # Set color based on health status
+    case "$health_status" in
+      "healthy")
+        status_color="$GREEN"
+        ;;
+      "unhealthy")
+        status_color="$RED"
+        all_healthy=false
+        ;;
+      "starting")
+        status_color="$YELLOW"
+        all_healthy=false
+        ;;
+      "No health check")
+        status_color="$GRAY"
+        health_status="No health check defined"
+        ;;
+      *)
+        status_color="$GRAY"
+        all_healthy=false
+        ;;
+    esac
+    
+    # Print status with color
+    printf "%-20s: %b%s%b\n" "$service_name" "$status_color" "$health_status" "$NC"
+    
+    # For unhealthy containers, show the last health check log
+    if [ "$health_status" = "unhealthy" ]; then
+      echo "  Last health check output:"
+      docker inspect --format "{{if .State.Health}}{{.State.Health.Log}}{{end}}" "$container" | 
+        tail -n 1 | 
+        sed 's/^/  /' # Indent output
+    fi
+  done
+  
+  echo "------------------------------------------------"
+  
+  # Print overall status
+  if [ "$all_healthy" = true ]; then
+    print_success "All services are healthy"
+  else
+    print_color "$YELLOW" "Some services have health issues"
+  fi
+  
+  # Suggest related commands
+  echo ""
+  echo "Related commands:"
+  echo "  dip logs [service]  - View container logs"
+  echo "  dip stats [service] - Monitor resource usage"
+  echo "  dip restart [service] - Restart services"
+}
+
+# Function to ensure Docker directory exists
+ensure_docker_dir() {
+  if [ ! -d "$DOCKER_DIR" ]; then
+    print_error "Docker directory not found at $DOCKER_DIR"
+    echo "Make sure you are in a project that uses DIP, or navigate to the project root"
+    exit 1
+  fi
+}
+
+# Function to check for environment file
+check_env_file() {
+  # Check for environment file location
+  if [ -f "${DOCKER_DIR}/env" ]; then
+    ENV_FILE="${DOCKER_DIR}/env"
+  elif [ -f "${ROOT_DIR}/.env" ]; then
+    ENV_FILE="${ROOT_DIR}/.env"
+  else
+    print_error "No environment file found at ${DOCKER_DIR}/env or ${ROOT_DIR}/.env"
+    exit 1
+      fi
+    
+      # Get the project name from the .env file
+      PROJECT_NAME=$(grep COMPOSE_PROJECT_NAME "$ENV_FILE" | cut -d= -f2)
+    
+      if [ -z "$PROJECT_NAME" ]; then
+    print_error "COMPOSE_PROJECT_NAME not found in $ENV_FILE file"
+    exit 1
+  fi
+}
+
+# Function to clean up unused Docker resources related to the project
+cleanup_project_resources() {
+  echo "Cleaning up unused Docker resources for this project..."
+  
+  # Check for environment file to get project name
+  local project_filter=""
+  
+  if [ -f "${DOCKER_DIR}/env" ]; then
+    ENV_FILE="${DOCKER_DIR}/env"
+  elif [ -f "${ROOT_DIR}/.env" ]; then
+    ENV_FILE="${ROOT_DIR}/.env"
+  fi
+  
+  if [ -n "$ENV_FILE" ]; then
+    PROJECT_NAME=$(grep COMPOSE_PROJECT_NAME "$ENV_FILE" 2>/dev/null | cut -d= -f2)
+    if [ -n "$PROJECT_NAME" ]; then
+      project_filter="--filter name=$PROJECT_NAME"
+    fi
+  fi
+  
+  # Stop and remove stopped containers related to this project
+  if [ -n "$project_filter" ]; then
+    echo "Finding stopped containers for project $PROJECT_NAME..."
+    local stopped_containers
+    stopped_containers=$(docker ps -a $project_filter --filter status=exited -q)
+    
+    if [ -n "$stopped_containers" ]; then
+      echo "Removing stopped containers..."
+      docker rm $stopped_containers
+    else
+      echo "No stopped containers found for this project."
+    fi
+    
+    # Remove dangling images that might be related to this project
+    # This is harder to filter by project, so we'll just remove dangling images
+    echo "Removing dangling images..."
+    docker image prune -f
+  else
+    echo -e "${YELLOW}No project name found. Skipping container cleanup.${NC}"
+    fi
+    
+    print_success "Cleanup completed."
+}
+
+# Function to perform a full Docker system prune
+prune_docker_system() {
+  echo "This will remove all unused Docker data, including:"
+  echo "- All stopped containers"
+  echo "- All networks not used by at least one container"
+  echo "- All dangling images"
+  echo "- All dangling build cache"
+  echo ""
+  read -p "Are you sure you want to continue? [y/N] " response
+  
+  if [[ "$response" =~ ^[Yy]$ ]]; then
+    echo "Pruning Docker system..."
+    docker system prune -f
+    
+    echo "Pruning Docker volumes..."
+    docker volume prune -f
+    
+    echo "System prune completed."
+  else
+    echo "Operation cancelled."
+  fi
+}
+
+if [ $# -eq 0 ]; then
+    # No arguments provided
+    show_help
+    exit 1
+fi
+
+# Special case for --version flag (handle this before environment checks)
+if [ "$1" = "--version" ]; then
+  show_version
+  exit 0
+fi
+
+# Special case for update command (doesn't need Docker environment)
+if [ "$1" = "update" ]; then
+  update_dip
+  exit 0
+fi
+
+# Special case for help command (doesn't need Docker environment)
+if [ "$1" = "help" ] || [ "$1" = "--help" ] || [ "$1" = "-h" ]; then
+  show_help
+  exit 0
+fi
+
+# Special case for system command (doesn't need a project environment)
+if [ "$1" = "system" ]; then
+  show_system_info
+  exit 0
+fi
+
+# Special case for prune command (doesn't need a project environment)
+if [ "$1" = "prune" ]; then
+  prune_docker_system
+  exit 0
+fi
+
+# Special case for stats command (can work outside project context)
+if [ "$1" = "stats" ]; then
+  show_container_stats "$2"
+  exit 0
+fi
+
+# Run docker-compose with proper configuration
+run_docker_compose() {
+  # Ensure Docker directory exists
+  ensure_docker_dir
+  
+  # Check for environment file
+  check_env_file
+
+  # Find the docker-compose file
+  COMPOSE_FILE="${DOCKER_DIR}/docker-compose.yml"
+  if [ ! -f "$COMPOSE_FILE" ]; then
+    print_error "docker-compose.yml not found at $COMPOSE_FILE"
+    exit 1
+  fi
+
+  # Create a temporary environment variable file for docker-compose
+  TEMP_ENV=$(mktemp)
+  cat "$ENV_FILE" > "$TEMP_ENV"
+  {
+    echo "ENV_FILE=$ENV_FILE"
+    echo "DOCKER_DIR=$DOCKER_DIR"
+    echo "ROOT_DIR=$ROOT_DIR"
+  } >> "$TEMP_ENV"
+
+  # Run docker-compose with the temp env file
+  docker-compose --env-file "$TEMP_ENV" -f "$COMPOSE_FILE" "$@"
+
+  result=$?
+  rm "$TEMP_ENV"
+  return $result
+}
+
+# Function to get container ID from service name with improved detection
+get_container_id() {
+  # Ensure Docker directory exists
+  ensure_docker_dir
+  
+  # Check for environment file
+  check_env_file
+  
+  local service_name="$1"
+
+  # Try different naming patterns Docker Compose might use
+  local patterns=(
+    "${PROJECT_NAME}-${service_name}-"  # newer Docker Compose format
+    "${PROJECT_NAME}_${service_name}_"  # older Docker Compose format
+    "${service_name}"                   # fallback to just the service name
+  )
+
+  local container_id=""
+
+  for pattern in "${patterns[@]}"; do
+    container_id=$(docker ps -q --filter "name=${pattern}")
+    if [ -n "$container_id" ]; then
+      echo "$container_id"
+      return 0
+    fi
+  done
+
+  # If we haven't found anything, try a more lenient search
+  container_id=$(docker ps | grep -i "${service_name}" | awk '{print $1}' | head -1)
+
+  if [ -z "$container_id" ]; then
+    print_error "Container for service '$service_name' not found or not running"
+    echo "Running containers:"
+    docker ps --format "{{.Names}}"
+    exit 1
+  fi
+
+  echo "$container_id"
+}
+
+# Function to load database credentials from .env file
+load_db_credentials() {
+  # Ensure Docker directory exists
+  ensure_docker_dir
+  
+  # Check for environment file
+  check_env_file
+  
+  if [ -f "$ENV_FILE" ]; then
+    # shellcheck source=.docker/env
+    source "$ENV_FILE"
+  else
+    echo -e "${RED}Error: Environment file $ENV_FILE not found${NC}"
+    exit 1
+  fi
+}
+
+# Function to update DIP to the latest version
+update_dip() {
+  echo "Updating DIP to the latest version..."
+  
+  # Create temporary directory for git clone
+  TEMP_DIR=$(mktemp -d)
+  if [ $? -ne 0 ]; then
+    print_error "Failed to create temporary directory"
+    exit 1
+  fi
+  
+  # Clone the repository
+  echo "Downloading latest version from $DEFAULT_TEMPLATES_REPO..."
+  if ! git clone --depth 1 --branch "$DEFAULT_TEMPLATES_BRANCH" "$DEFAULT_TEMPLATES_REPO" "$TEMP_DIR"; then
+    print_error "Failed to clone repository"
+    rm -rf "$TEMP_DIR"
+    exit 1
+  fi
+  
+  # Check if the script exists in the repo
+  if [ ! -f "$TEMP_DIR/dip" ]; then
+    print_error "DIP script not found in repository"
+    rm -rf "$TEMP_DIR"
+    exit 1
+  fi
+  
+  # Make the script executable
+  chmod +x "$TEMP_DIR/dip"
+  
+  # Create installation directory if it doesn't exist
+  mkdir -p "$(dirname "$DIP_INSTALL_PATH")"
+  
+  # Back up the current script
+  if [ -f "$DIP_INSTALL_PATH" ]; then
+    cp "$DIP_INSTALL_PATH" "${DIP_INSTALL_PATH}.backup"
+    echo "Backed up current script to ${DIP_INSTALL_PATH}.backup"
+  fi
+  
+  # Install the new script
+  cp "$TEMP_DIR/dip" "$DIP_INSTALL_PATH"
+  echo "Updated DIP script at $DIP_INSTALL_PATH"
+  
+  # Create ~/.dip directory if it doesn't exist
+  mkdir -p "$DIP_HOME"
+  
+  # Copy templates and config files
+  if [ -d "$TEMP_DIR/templates" ]; then
+    mkdir -p "$TEMPLATES_DIR"
+    cp -R "$TEMP_DIR/templates/"* "$TEMPLATES_DIR/"
+    echo "Updated templates in $TEMPLATES_DIR"
+  fi
+  
+  if [ -d "$TEMP_DIR/config" ]; then
+    mkdir -p "$DIP_HOME/config"
+    cp -R "$TEMP_DIR/config/"* "$DIP_HOME/config/"
+    echo "Updated configuration files in $DIP_HOME/config"
+  fi
+  
+  # Clean up
+  rm -rf "$TEMP_DIR"
+  
+  print_success "DIP successfully updated!"
+}
+
+# Check if the command is a custom command
+check_custom_command() {
+  local cmd="$1"
+  
+  # Skip custom command check if COMMANDS_DIR doesn't exist
+  if [ ! -d "$COMMANDS_DIR" ]; then
+    return 1
+  fi
+  
+  local cmd_file="$COMMANDS_DIR/$cmd"
+
+  if [ -f "$cmd_file" ] && [ -x "$cmd_file" ]; then
+    export ROOT_DIR=$ROOT_DIR
+    shift
+    "$cmd_file" "$@"
+    return 0
+  fi
+
+  return 1
+}
+
+# Handle commands
+# First check if it's a custom command
+if check_custom_command "$@"; then
+  exit $?
+fi
+
+# If not, process built-in commands
+case "$1" in
+  bash)
+    if [ -z "$2" ]; then
+      print_error "No service specified"
+      echo "Usage: dip bash [service]"
+      exit 1
+    fi
+
+    container_id=$(get_container_id "$2")
+    docker exec -it "$container_id" bash
+    ;;
+
+  exec)
+    if [ -z "$2" ]; then
+      print_error "No service specified"
+      echo "Usage: dip exec [service] [command]"
+      exit 1
+    fi
+  
+    if [ -z "$3" ]; then
+      print_error "No command specified"
+      echo "Usage: dip exec [service] [command]"
+      exit 1
+    fi
+
+    service_name="$2"
+    container_id=$(get_container_id "$service_name")
+
+    # Shift arguments to get everything after the service name as the command
+    shift 2
+    cmd="$*"
+
+    docker exec "$container_id" bash -c "$cmd"
+
+    exit_code=$?
+    if [ $exit_code -ne 0 ]; then
+      print_error "Command exited with code: $exit_code"
+      exit $exit_code
+    fi
+    ;;
+
+  db)
+    load_db_credentials
+
+    case "$2" in
+      dump)
+        if [ -z "$3" ]; then
+          print_error "No output path specified"
+          echo "Usage: dip db dump [output_path]"
+          exit 1
+        fi
+
+        output_path="$3"
+        container_id=$(get_container_id "db")
+
+        echo "Exporting database '$MYSQL_DATABASE' to $output_path..."
+        echo "Using container ID: $container_id"
+        if docker exec "$container_id" mysqldump -u root -p"$MYSQL_ROOT_PASSWORD" "$MYSQL_DATABASE" > "$output_path"; then
+          print_success "Database exported successfully to $output_path"
+        else
+          print_error "Database export failed"
+          exit 1
+        fi
+        ;;
+
+      import)
+        if [ -z "$3" ]; then
+          print_error "No input path specified"
+          echo "Usage: dip db import [input_path]"
+          exit 1
+        fi
+      
+        input_path="$3"
+      
+        if [ ! -f "$input_path" ]; then
+          print_error "File $input_path not found"
+          exit 1
+        fi
+
+        container_id=$(get_container_id "db")
+
+        echo "Importing database from $input_path to '$MYSQL_DATABASE'..."
+        echo "Using container ID: $container_id"
+        if docker exec -i "$container_id" mysql -u root -p"$MYSQL_ROOT_PASSWORD" "$MYSQL_DATABASE" < "$input_path"; then
+          print_success "Database imported successfully"
+        else
+          print_error "Database import failed"
+          exit 1
+        fi
+        ;;
+
+      *)
+        print_error "Unknown db command: $2"
+        echo "Available db commands: dump, import"
+        exit 1
+        ;;
+    esac
+    ;;
+
+  start)
+    echo "Starting containers..."
+    run_docker_compose up -d
+    ;;
+
+  stop)
+    echo "Stopping containers..."
+    run_docker_compose stop
+    ;;
+
+  restart)
+    echo "Restarting containers..."
+    run_docker_compose restart
+    ;;
+
+  status)
+    echo "Container status:"
+    run_docker_compose ps
+    ;;
+
+  logs)
+    if [ -z "$2" ]; then
+      # If no service is specified, show logs for all services
+      echo "Showing logs for all services..."
+      run_docker_compose logs --tail=100 -f
+    else
+      # Show logs for specific service
+      echo "Showing logs for service: $2..."
+      run_docker_compose logs --tail=100 -f "$2"
+    fi
+    ;;
+
+  build)
+    if [ -z "$2" ]; then
+      # If no service is specified, build all services
+      echo "Building all services..."
+      run_docker_compose build
+    else
+      # Build specific service
+      echo "Building service: $2..."
+      run_docker_compose build "$2"
+    fi
+    ;;
+
+  pull)
+    echo "Pulling latest images..."
+    run_docker_compose pull
+    ;;
+
+  reset)
+    echo "Resetting containers (stop, remove, start)..."
+    echo "Stopping containers..."
+    run_docker_compose stop
+    
+    echo "Removing containers..."
+    run_docker_compose rm -f
+    
+    echo "Starting containers..."
+    run_docker_compose up -d
+    
+    print_success "Container reset completed."
+    ;;
+
+  system)
+    show_system_info
+    ;;
+
+  cleanup)
+    cleanup_project_resources
+    ;;
+
+  prune)
+    prune_docker_system
+    ;;
+
+  stats)
+    show_container_stats "$2"
+    ;;
+
+  top)
+    show_container_processes "$2"
+    ;;
+
+  health)
+    check_services_health
+    ;;
+
+  update)
+    update_dip
+    ;;
+
+  help|--help|-h)
+    show_help
+    ;;
+
+  --version|-v)
+    show_version
+    ;;
+
+  *)
+    print_error "Unknown command: $1"
+    show_help
+    exit 1
+    ;;
+esac
+
+exit 0
