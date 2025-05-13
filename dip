@@ -642,7 +642,7 @@ get_container_id() {
   local container_id=""
 
   for pattern in "${patterns[@]}"; do
-    container_id=$(docker ps -q --filter "name=${pattern}")
+    container_id=$(docker ps -q --filter "name=^${pattern}")
     if [ -n "$container_id" ]; then
       echo "$container_id"
       return 0
