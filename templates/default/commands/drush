@@ -4,7 +4,7 @@
 
 set -e
 
-source "${ROOT_DIR}/.docker/commands/utils/color.sh"
+source "${PROJECT_ROOT_DIR}/.docker/commands/utils/color.sh"
 
 msg "${YELLOW}[INFO] Running drush $*${NOFORMAT}"
 dip exec backend "/var/www/vendor/bin/drush $*"
