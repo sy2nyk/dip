@@ -88,7 +88,8 @@ print_separator() {
 # Function to find the project root directory
 find_project_root() {
   # Start from the current directory and look for .docker directory
-  local dir=$(pwd)
+  local dir
+  dir=$(pwd)
   while [[ "$dir" != "/" ]]; do
     if [ -d "$dir/.docker" ]; then
       echo "$dir"
@@ -122,7 +123,7 @@ load_env_file() {
   PROJECT_NAME=$(grep PROJECT_NAME "${PROJECT_ENV_PATH}" | cut -d= -f2)
   CONTAINER_DIR=$(grep CONTAINER_DIR "${PROJECT_ENV_PATH}" | cut -d= -f2)
   # Default container source code path
-  if [ -z $CONTAINER_DIR ]; then
+  if [ -z "$CONTAINER_DIR" ]; then
     CONTAINER_DIR="/var/www"
   fi
 
@@ -324,14 +325,14 @@ show_container_stats() {
 
     echo "Showing stats for service: $service_name"
     # Run docker stats with the specific container IDs
-    docker stats $container_ids
+    docker stats "$container_ids"
     exit 0
   fi
 
   local filter_args="--filter name=${PROJECT_NAME}"
   echo "Showing stats for project: ${PROJECT_NAME}"
 
-  docker stats $filter_args
+  docker stats "$filter_args"
 }
 
 # Function to show running processes in containers
@@ -474,11 +475,11 @@ cleanup_project_resources() {
     project_filter="--filter name=${PROJECT_NAME}"
     echo "Finding stopped containers for project ${PROJECT_NAME}..."
     local stopped_containers
-    stopped_containers=$(docker ps -a $project_filter --filter status=exited -q)
+    stopped_containers=$(docker ps -a "$project_filter" --filter status=exited -q)
 
     if [ -n "${stopped_containers}" ]; then
       echo "Removing stopped containers..."
-      docker rm $stopped_containers
+      docker rm "$stopped_containers"
     else
       echo "No stopped containers found for this project."
     fi
@@ -502,7 +503,7 @@ prune_docker_system() {
   echo "- All dangling images"
   echo "- All dangling build cache"
   echo ""
-  read -p "Are you sure you want to continue? [y/N] " response
+  read -rp "Are you sure you want to continue? [y/N] " response
 
   if [[ "$response" =~ ^[Yy]$ ]]; then
     echo "Pruning Docker system..."
@@ -515,6 +516,71 @@ prune_docker_system() {
   else
     echo "Operation cancelled."
   fi
+}
+
+# Function to update DIP to the latest version
+update_dip() {
+  echo "Updating DIP to the latest version..."
+
+  # Create temporary directory for git clone
+  local temp_dir
+  temp_dir=$(mktemp -d)
+  if [ $? -ne 0 ]; then
+    print_error "Failed to create temporary directory"
+    exit 1
+  fi
+
+  # Clone the repository
+  echo "Downloading latest version from ${DEFAULT_TEMPLATES_REPO}..."
+  if ! git clone --depth 1 --branch "${DEFAULT_TEMPLATES_BRANCH}" "${DEFAULT_TEMPLATES_REPO}" "${temp_dir}"; then
+    print_error "Failed to clone repository"
+    rm -rf "${temp_dir}"
+    exit 1
+  fi
+
+  # Check if the script exists in the repo
+  if [ ! -f "${temp_dir}/dip" ]; then
+    print_error "DIP script not found in repository"
+    rm -rf "${temp_dir}"
+    exit 1
+  fi
+
+  # Make the script executable
+  chmod +x "${temp_dir}/dip"
+
+  # Create installation directory if it doesn't exist
+  mkdir -p "$(dirname "${DIP_BIN_PATH}")"
+
+  # Back up the current script
+  if [ -f "${DIP_BIN_PATH}" ]; then
+    cp "${DIP_BIN_PATH}" "${DIP_BIN_PATH}.backup"
+    echo "Backed up current script to ${DIP_BIN_PATH}.backup"
+  fi
+
+  # Install the new script
+  cp "${temp_dir}/dip" "${DIP_BIN_PATH}"
+  echo "Updated DIP script at ${DIP_BIN_PATH}"
+
+  # Create ~/.dip directory if it doesn't exist
+  mkdir -p "${DIP_HOME_DIR}"
+
+  # Copy templates and config files
+  if [ -d "${temp_dir}/templates" ]; then
+    mkdir -p "${DIP_TEMPLATES_DIR}"
+    cp -R "${temp_dir}/templates/"* "${DIP_TEMPLATES_DIR}/"
+    echo "Updated templates in ${DIP_TEMPLATES_DIR}"
+  fi
+
+  if [ -d "${temp_dir}/config" ]; then
+    mkdir -p "${DIP_HOME_DIR}/config"
+    cp -R "${temp_dir}/config/"* "${DIP_HOME_DIR}/config/"
+    echo "Updated configuration files in ${DIP_HOME_DIR}/config"
+  fi
+
+  # Clean up
+  rm -rf "${temp_dir}"
+
+  print_success "DIP successfully updated!"
 }
 
 if [ $# -eq 0 ]; then
@@ -640,70 +706,6 @@ load_db_credentials() {
   fi
 }
 
-# Function to update DIP to the latest version
-update_dip() {
-  echo "Updating DIP to the latest version..."
-
-  # Create temporary directory for git clone
-  local temp_dir=$(mktemp -d)
-  if [ $? -ne 0 ]; then
-    print_error "Failed to create temporary directory"
-    exit 1
-  fi
-
-  # Clone the repository
-  echo "Downloading latest version from ${DEFAULT_TEMPLATES_REPO}..."
-  if ! git clone --depth 1 --branch "${DEFAULT_TEMPLATES_BRANCH}" "${DEFAULT_TEMPLATES_REPO}" "${temp_dir}"; then
-    print_error "Failed to clone repository"
-    rm -rf "${temp_dir}"
-    exit 1
-  fi
-
-  # Check if the script exists in the repo
-  if [ ! -f "${temp_dir}/dip" ]; then
-    print_error "DIP script not found in repository"
-    rm -rf "${temp_dir}"
-    exit 1
-  fi
-
-  # Make the script executable
-  chmod +x "${temp_dir}/dip"
-
-  # Create installation directory if it doesn't exist
-  mkdir -p "$(dirname "${DIP_BIN_PATH}")"
-
-  # Back up the current script
-  if [ -f "${DIP_BIN_PATH}" ]; then
-    cp "${DIP_BIN_PATH}" "${DIP_BIN_PATH}.backup"
-    echo "Backed up current script to ${DIP_BIN_PATH}.backup"
-  fi
-
-  # Install the new script
-  cp "${temp_dir}/dip" "${DIP_BIN_PATH}"
-  echo "Updated DIP script at ${DIP_BIN_PATH}"
-
-  # Create ~/.dip directory if it doesn't exist
-  mkdir -p "${DIP_HOME_DIR}"
-
-  # Copy templates and config files
-  if [ -d "${temp_dir}/templates" ]; then
-    mkdir -p "${DIP_TEMPLATES_DIR}"
-    cp -R "${temp_dir}/templates/"* "${DIP_TEMPLATES_DIR}/"
-    echo "Updated templates in ${DIP_TEMPLATES_DIR}"
-  fi
-
-  if [ -d "${temp_dir}/config" ]; then
-    mkdir -p "${DIP_HOME_DIR}/config"
-    cp -R "${temp_dir}/config/"* "${DIP_HOME_DIR}/config/"
-    echo "Updated configuration files in ${DIP_HOME_DIR}/config"
-  fi
-
-  # Clean up
-  rm -rf "${temp_dir}"
-
-  print_success "DIP successfully updated!"
-}
-
 # Check if the command is a custom command
 check_custom_command() {
   local cmd="$1"
@@ -768,7 +770,7 @@ case "$1" in
     cmd="$*"
 
     dir=$(pwd)
-    relative_path=${dir#$PROJECT_ROOT_DIR}
+    relative_path=${dir#"$PROJECT_ROOT_DIR"}
     relative_path=${relative_path#/}
     if [ -z "$relative_path" ]; then
       container_dir=$CONTAINER_DIR
@@ -776,7 +778,7 @@ case "$1" in
       container_dir="${CONTAINER_DIR}/${relative_path}"
     fi
 
-    docker exec -w "$container_dir" "$container_id" bash -c "$cmd"
+    docker exec -e COLUMNS -e LINES -itw "${container_dir}" "${container_id}" bash -ilc "$cmd"
 
     exit_code=$?
     if [ $exit_code -ne 0 ]; then
